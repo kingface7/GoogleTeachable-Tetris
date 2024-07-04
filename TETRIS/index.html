@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Controlled Tetris</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        h1 {
+            margin-top: 20px;
+            margin-bottom: 20px;
+            width: 100%;
+            text-align: center;
+        }
+        #controls {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            position: absolute;
+            top: 10px;
+            left: 10px;
+        }
+        #webcam-container {
+            position: relative;
+            width: 200px;
+            height: 200px;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1;
+        }
+        #webcam-container video {
+            width: 100%;
+            height: 100%;
+        }
+        #label-container {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 5px;
+            font-size: 14px;
+            text-align: center;
+        }
+        #game-container {
+            display: flex;
+            flex-direction: row;
+            align-items: flex-start;
+            margin-top: 20px;
+        }
+        #tetris, #next-tetromino {
+            border: 1px solid black;
+        }
+        button {
+            margin-top: 10px; /* Adjust margin to better fit the new button layout */
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #scoreboard {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            font-size: 18px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #button-container {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Teachable Machine Tetris Game</h1>
+    <div id="controls">
+        <div id="webcam-container">
+            <video id="webcam" autoplay playsinline></video>
+            <div id="label-container"></div>
+        </div>
+        <div id="button-container">
+            <button type="button" onclick="init()">Start</button>
+            <button type="button" onclick="resetGame()">Reset</button>
+        </div>
+    </div>
+    <div id="game-container">
+        <canvas id="tetris" width="300" height="600"></canvas>
+        <canvas id="next-tetromino" width="100" height="100"></canvas>
+    </div>
+    <div id="scoreboard">
+        <div>Score: <span id="score">0</span></div>
+        <div>Highscore: <span id="highscore">0</span></div>
+    </div>
+    <audio id="background-music" loop>
+        <source src="Tetris.mp3" type="audio/mpeg">
+        Your browser does not support the audio element.
+    </audio>
+    <audio id="sound-effect" src="emotionalDamage.mp3"></audio>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+    <script>
+        const URL = "https://teachablemachine.withgoogle.com/models/dMlX4ArRJ/";
+        let model, webcam, labelContainer, maxPredictions;
+        let score = 0;
+        let highscore = localStorage.getItem('highscore') || 0;
+        let backgroundMusic = document.getElementById("background-music");
+        let soundEffect = document.getElementById("sound-effect");
+        let gameOver = false;
+
+        document.getElementById('highscore').textContent = highscore;
+
+        async function init() {
+            const modelURL = URL + "model.json";
+            const metadataURL = URL + "metadata.json";
+
+            model = await tmImage.load(modelURL, metadataURL);
+            maxPredictions = model.getTotalClasses();
+
+            const flip = true; // whether to flip the webcam
+            webcam = new tmImage.Webcam(200, 200, flip); // width, height, flip
+            await webcam.setup(); // request access to the webcam
+            await webcam.play();
+
+            const webcamContainer = document.getElementById("webcam-container");
+            webcamContainer.appendChild(webcam.canvas);
+
+            labelContainer = document.getElementById("label-container");
+
+            backgroundMusic.play();
+
+            score = 0;
+            document.getElementById('score').textContent = score;
+
+            startTetris();
+
+            predict();
+        }
+
+        async function predict() {
+            if (gameOver) return;
+
+            webcam.update(); // update the webcam frame
+            const prediction = await model.predict(webcam.canvas);
+            let highestProb = 0;
+            let gesture = '';
+            for (let i = 0; i < maxPredictions; i++) {
+                const probability = parseFloat(prediction[i].probability.toFixed(2));
+                const className = prediction[i].className;
+                if (probability > highestProb) {
+                    highestProb = probability;
+                    gesture = className;
+                }
+            }
+            labelContainer.innerHTML = `${gesture}: ${highestProb}`;
+            controlTetris(gesture);
+
+            requestAnimationFrame(predict);
+        }
+
+        const canvas = document.getElementById('tetris');
+        const context = canvas.getContext('2d');
+        const nextCanvas = document.getElementById('next-tetromino');
+        const nextContext = nextCanvas.getContext('2d');
+        const grid = 30;
+        const tetrominoes = [
+            [[1, 1, 1, 1]], // I
+            [[1, 1], [1, 1]], // O
+            [[0, 1, 0], [1, 1, 1]], // T
+            [[1, 1, 0], [0, 1, 1]], // S
+            [[0, 1, 1], [1, 1, 0]], // Z
+            [[1, 0, 0], [1, 1, 1]], // L
+            [[0, 0, 1], [1, 1, 1]], // J
+        ];
+
+        const colors = ['cyan', 'yellow', 'purple', 'green', 'red', 'orange', 'blue'];
+        let board = Array.from({ length: 20 }, () => Array(10).fill(0));
+        let currentTetromino = getRandomTetromino();
+        let nextTetromino = getRandomTetromino();
+        let position = { x: 3, y: 0 };
+        let lastRotateTime = 0;
+        const rotateDelay = 1000; // Delay in milliseconds
+        let lastMoveTime = 0;
+        const moveDelay = 1000; // Delay in milliseconds for left/right moves
+
+        function drawBoard() {
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            board.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value) {
+                        context.fillStyle = colors[value - 1];
+                        context.fillRect(x * grid, y * grid, grid - 1, grid - 1);
+                    }
+                });
+            });
+            if (currentTetromino) {
+                currentTetromino.shape.forEach((row, y) => {
+                    row.forEach((value, x) => {
+                        if (value) {
+                            context.fillStyle = colors[currentTetromino.color];
+                            context.fillRect((position.x + x) * grid, (position.y + y) * grid, grid - 1, grid - 1);
+                        }
+                    });
+                });
+            }
+        }
+
+        function drawNextTetromino() {
+            nextContext.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+            if (nextTetromino) {
+                nextTetromino.shape.forEach((row, y) => {
+                    row.forEach((value, x) => {
+                        if (value) {
+                            nextContext.fillStyle = colors[nextTetromino.color];
+                            nextContext.fillRect(x * grid, y * grid, grid - 1, grid - 1);
+                        }
+                    });
+                });
+            }
+        }
+
+        function getRandomTetromino() {
+            const index = Math.floor(Math.random() * tetrominoes.length);
+            return { shape: tetrominoes[index], color: index };
+        }
+
+        function moveTetromino(offsetX, offsetY) {
+            position.x += offsetX;
+            position.y += offsetY;
+            if (collides()) {
+                position.x -= offsetX;
+                position.y -= offsetY;
+                if (offsetY > 0) {
+                    mergeTetromino();
+                    position = { x: 3, y: 0 };
+                    currentTetromino = nextTetromino;
+                    nextTetromino = getRandomTetromino();
+                    drawNextTetromino();
+                    if (collides()) {
+                        gameOver = true;
+                        emotionalDamage();
+                        setTimeout(() => {
+                            alert('Game Over!');
+                            updateHighscore();
+                        }, 1000); // Delay alert to finish sound
+                        backgroundMusic.pause();
+                    }
+                }
+            }
+            drawBoard();
+        }
+
+        function rotateTetromino() {
+            const now = Date.now();
+            if (now - lastRotateTime < rotateDelay) {
+                return; // Too soon to rotate again
+            }
+            lastRotateTime = now;
+            const shape = currentTetromino.shape;
+            const rotatedShape = shape[0].map((_, index) => shape.map(row => row[index]).reverse());
+            const prevShape = currentTetromino.shape;
+            currentTetromino.shape = rotatedShape;
+            if (collides()) {
+                currentTetromino.shape = prevShape;
+            }
+            drawBoard();
+        }
+
+        function collides() {
+            const shape = currentTetromino.shape;
+            return shape.some((row, dy) => {
+                return row.some((value, dx) => {
+                    const x = position.x + dx;
+                    const y = position.y + dy;
+                    return value && (
+                        x < 0 || x >= 10 || y >= 20 || board[y] && board[y][x]
+                    );
+                });
+            });
+        }
+
+        function mergeTetromino() {
+            currentTetromino.shape.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value) {
+                        board[position.y + y][position.x + x] = currentTetromino.color + 1;
+                    }
+                });
+            });
+            clearLines();
+        }
+
+        function clearLines() {
+            let linesCleared = 0;
+            board = board.filter(row => {
+                if (row.every(value => value)) {
+                    linesCleared++;
+                    return false;
+                }
+                return true;
+            });
+            while (board.length < 20) {
+                board.unshift(Array(10).fill(0));
+            }
+            updateScore(linesCleared);
+        }
+
+        function startTetris() {
+            drawBoard();
+            drawNextTetromino();
+            setInterval(() => {
+                if (!gameOver) {
+                    moveTetromino(0, 1);
+                }
+            }, 1000);
+        }
+
+        function controlTetris(gesture) {
+            const now = Date.now();
+            if (gameOver) return;
+
+            if (gesture === 'links' && now - lastMoveTime >= moveDelay) {
+                moveTetromino(-1, 0);
+                lastMoveTime = now;
+            } else if (gesture === 'rechts' && now - lastMoveTime >= moveDelay) {
+                moveTetromino(1, 0);
+                lastMoveTime = now;
+            } else if (gesture === 'rotieren') {
+                rotateTetromino();
+            } else if (gesture === 'drop' && now - lastMoveTime >= moveDelay) {
+                moveTetromino(0, 1);
+                lastMoveTime = now;
+            } else if (gesture === 'nichts') {
+                // Do nothing for 'nichts' gesture
+            }
+        }
+
+        function updateScore(linesCleared) {
+            const points = linesCleared * 100; // Example scoring: 100 points per cleared line
+            score += points;
+            document.getElementById('score').textContent = score;
+        }
+
+        function updateHighscore() {
+            if (score > highscore) {
+                highscore = score;
+                localStorage.setItem('highscore', highscore);
+                document.getElementById('highscore').textContent = highscore;
+            }
+        }
+
+        function emotionalDamage() {
+            soundEffect.play();
+            setTimeout(() => {
+            backgroundMusic.play();
+            }, 3000); // 3000 milliseconds (3 seconds) delay
+
+        }
+
+        function resetGame() {
+            location.reload();
+        }
+    </script>
+</body>
+</html>
